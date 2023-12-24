@@ -1,0 +1,29 @@
+plugins {
+    id 'java'
+    id 'maven-publish'
+    id 'java-library'
+}
+
+group 'io.github.stuff_stuffs'
+version '1.40-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation group: 'com.squareup', name: 'javapoet', version: '1.13.0'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+
+    // See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
+    repositories {
+        mavenLocal()
+    }
+}
