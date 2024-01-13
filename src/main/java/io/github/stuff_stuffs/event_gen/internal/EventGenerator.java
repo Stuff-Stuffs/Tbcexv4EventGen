@@ -17,6 +17,7 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Types;
 import java.io.IOException;
 import java.util.*;
+import java.util.function.Consumer;
 
 @SupportedAnnotationTypes({"io.github.stuff_stuffs.event_gen.api.event.gen.EventInfo"})
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
@@ -92,6 +93,7 @@ public final class EventGenerator extends AbstractProcessor {
         final ClassName className = ClassName.get(packageLoc, name);
         final MethodSpec convertSpec = createConverterMethod(className, eventMethod, viewMethod, executableElement, eventInfo, compareInfo);
         final MethodSpec invokerSpec = createInvokerMethod(className, eventMethod, eventInfo, compareInfo);
+        MethodSpec delaySpec = createDelayMethod(className, eventMethod, eventInfo, compareInfo);
         final TypeSpec factoryClass = TypeSpec
                 .anonymousClassBuilder("")
                 .addSuperinterface(
@@ -103,6 +105,7 @@ public final class EventGenerator extends AbstractProcessor {
                 )
                 .addMethod(convertSpec)
                 .addMethod(invokerSpec)
+                .addMethod(delaySpec)
                 .build();
         final MethodSpec factoryMethod = MethodSpec
                 .methodBuilder("factory")
@@ -116,7 +119,7 @@ public final class EventGenerator extends AbstractProcessor {
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                 .addCode(CodeBlock.builder().addStatement("return $L", factoryClass).build()).build();
         builder.addMethod(factoryMethod);
-        final JavaFile file = JavaFile.builder(packageLoc, builder.build()).build();
+        final JavaFile file = JavaFile.builder(packageLoc, builder.build()).indent("    ").build();
         try (final var writer = processingEnv.getFiler().createSourceFile(packageLoc + "." + name).openWriter()) {
             writer.write(file.toString());
         } catch (final IOException e) {
@@ -176,6 +179,91 @@ public final class EventGenerator extends AbstractProcessor {
                 .build();
     }
 
+    private MethodSpec createDelayMethod(final ClassName className, final MethodSpec eventMethod, final EventInfo eventInfo, final EventComparisonInfo compareInfo) {
+        String params = "";
+        boolean any = false;
+        final List<Object> args = new ArrayList<>();
+        args.add(eventMethod);
+        for (final ParameterSpec parameter : eventMethod.parameters) {
+            if (any) {
+                params = params + ",";
+            }
+            params = params + "$N";
+            args.add(parameter.name);
+            any = true;
+        }
+        final TypeSpec runDelegate = TypeSpec.anonymousClassBuilder("")
+                .addSuperinterface(Runnable.class)
+                .addMethod(
+                        MethodSpec.methodBuilder("run")
+                                .addModifiers(Modifier.PUBLIC)
+                                .addAnnotation(Override.class)
+                                .addCode(
+                                        CodeBlock.builder()
+                                                .addStatement("delegate.$N(" + params + ")", args.toArray())
+                                                .build()
+                                )
+                                .build()
+                ).build();
+        final MethodSpec.Builder wrapperMethod = MethodSpec.methodBuilder(eventMethod.name)
+                .addModifiers(Modifier.PUBLIC)
+                .returns(eventMethod.returnType)
+                .addTypeVariables(eventMethod.typeVariables)
+                .addAnnotation(Override.class);
+        for (final ParameterSpec parameter : eventMethod.parameters) {
+            wrapperMethod.addParameter(parameter);
+        }
+        if (eventMethod.returnType.equals(TypeName.VOID)) {
+            wrapperMethod.addCode(
+                    CodeBlock.builder()
+                            .addStatement("consumer.accept($L)", runDelegate)
+                            .addStatement("return")
+                            .build()
+            );
+        } else {
+            wrapperMethod.addCode(
+                    CodeBlock.builder()
+                            .addStatement("consumer.accept($L)", runDelegate)
+                            .addStatement("return " + eventInfo.defaultValue())
+                            .build()
+            );
+        }
+        final TypeSpec.Builder wrapper = TypeSpec.anonymousClassBuilder("").addSuperinterface(className).addMethod(wrapperMethod.build());
+        if (compareInfo != null) {
+            final MethodSpec ordSpec = MethodSpec
+                    .methodBuilder("ord")
+                    .addModifiers(Modifier.PUBLIC)
+                    .returns(ClassName.get(mirrorFromCompareInfo(compareInfo)))
+                    .addStatement(
+                            "throw new $T(\"Somebody tried to sort an invoker!\")",
+                            ClassName.get(UnsupportedOperationException.class)
+                    )
+                    .build();
+            wrapper.addMethod(ordSpec);
+        }
+        return MethodSpec
+                .methodBuilder("delay")
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(Override.class)
+                .addParameter(
+                        className,
+                        "delegate"
+                )
+                .addParameter(
+                        ParameterizedTypeName.get(
+                                Consumer.class,
+                                Runnable.class
+                        ),
+                        "consumer"
+                )
+                .returns(className)
+                .addCode(
+                        "return $L;",
+                        wrapper.build()
+                )
+                .build();
+    }
+
     private MethodSpec createInvokerMethod(final ClassName className, final MethodSpec eventMethod, final EventInfo eventInfo, final EventComparisonInfo compareInfo) {
         String params = "";
         boolean any = false;
@@ -230,7 +318,7 @@ public final class EventGenerator extends AbstractProcessor {
                     .returns(ClassName.get(mirrorFromCompareInfo(compareInfo)))
                     .addStatement(
                             "throw new $T(\"Somebody tried to sort an invoker!\")",
-                            ClassName.get(RuntimeException.class)
+                            ClassName.get(UnsupportedOperationException.class)
                     )
                     .build();
             builder.addMethod(ordSpec);
